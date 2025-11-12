@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Droplets, Network, Database, LineChart, Settings, Layers } from "lucide-react";
+import { Droplets, Network, Database, LineChart, Settings, Layers, Box } from "lucide-react";
 import SystemArchitecture from "@/components/diagrams/SystemArchitecture";
 import NetworkComponents from "@/components/diagrams/NetworkComponents";
 import SimulationWorkflow from "@/components/diagrams/SimulationWorkflow";
@@ -10,6 +10,7 @@ import ProjectStructure from "@/components/diagrams/ProjectStructure";
 import HydraulicProcess from "@/components/diagrams/HydraulicProcess";
 import InteractiveNetwork from "@/components/diagrams/InteractiveNetwork";
 import TechnicalGlossary from "@/components/diagrams/TechnicalGlossary";
+import Network3D from "@/components/diagrams/Network3D";
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState("interactive");
@@ -68,7 +69,7 @@ const Index = () => {
 
         {/* Interactive Diagrams */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 w-full h-auto gap-2 bg-card/50 p-2">
+          <TabsList className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-9 w-full h-auto gap-2 bg-card/50 p-2">
             <TabsTrigger value="interactive" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Network className="w-4 h-4" />
               <span className="hidden sm:inline">Interactive</span>
@@ -100,6 +101,10 @@ const Index = () => {
             <TabsTrigger value="hydraulic" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Droplets className="w-4 h-4" />
               <span className="hidden sm:inline">Hydraulic</span>
+            </TabsTrigger>
+            <TabsTrigger value="3d" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Box className="w-4 h-4" />
+              <span className="hidden sm:inline">3D View</span>
             </TabsTrigger>
           </TabsList>
 
@@ -133,6 +138,10 @@ const Index = () => {
 
           <TabsContent value="hydraulic" className="mt-6">
             <HydraulicProcess />
+          </TabsContent>
+
+          <TabsContent value="3d" className="mt-6">
+            <Network3D />
           </TabsContent>
         </Tabs>
       </main>
