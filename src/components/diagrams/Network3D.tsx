@@ -1,8 +1,9 @@
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Text, Line, Sphere, Cylinder } from "@react-three/drei";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useState } from "react";
+import { Slider } from "@/components/ui/slider";
+import { useState, useRef, useMemo } from "react";
 import * as THREE from "three";
 import CrossSectionView from "./CrossSectionView";
 
@@ -37,6 +38,29 @@ const pipes: PipeData[] = [
   { id: "P-4", from: "MH-4", to: "MH-5", diameter: 0.45, slope: 0.5 },
 ];
 
+// Calculate velocity using Manning's equation
+const calculateVelocity = (diameter: number, slope: number, flowRate: number, manningN: number = 0.013): number => {
+  // Q = (1/n) * A * R^(2/3) * S^(1/2)
+  // V = Q / A
+  const radius = diameter / 2;
+  const area = Math.PI * radius * radius;
+  
+  if (flowRate === 0) return 0;
+  
+  // Simplified: assume pipe is half full for flow calculations
+  const hydraulicRadius = radius / 2;
+  const velocity = (1 / manningN) * Math.pow(hydraulicRadius, 2/3) * Math.pow(slope / 100, 0.5);
+  
+  // Scale by flow rate factor
+  return velocity * (flowRate / 5); // Base velocity at flow rate of 5
+};
+
+interface FlowParticle {
+  id: number;
+  progress: number;
+  pipeId: string;
+}
+
 const Manhole = ({ data, onClick, isSelected }: { data: ManholeData; onClick: () => void; isSelected: boolean }) => {
   return (
     <group position={data.position}>
@@ -68,11 +92,90 @@ const Manhole = ({ data, onClick, isSelected }: { data: ManholeData; onClick: ()
   );
 };
 
-const Pipe = ({ data, manholes, onClick, isSelected }: { 
+const FlowParticles = ({ 
+  pipe, 
+  manholes, 
+  flowRate, 
+  particleCount = 5 
+}: { 
+  pipe: PipeData; 
+  manholes: ManholeData[]; 
+  flowRate: number;
+  particleCount?: number;
+}) => {
+  const particles = useRef<FlowParticle[]>([]);
+  const meshRefs = useRef<THREE.Mesh[]>([]);
+  
+  // Initialize particles
+  useMemo(() => {
+    particles.current = Array.from({ length: particleCount }, (_, i) => ({
+      id: i,
+      progress: i / particleCount,
+      pipeId: pipe.id,
+    }));
+  }, [particleCount, pipe.id]);
+
+  const fromManhole = manholes.find((m) => m.id === pipe.from);
+  const toManhole = manholes.find((m) => m.id === pipe.to);
+
+  useFrame((state, delta) => {
+    if (!fromManhole || !toManhole || flowRate === 0) return;
+
+    const velocity = calculateVelocity(pipe.diameter, pipe.slope, flowRate);
+    const fromPos = new THREE.Vector3(...fromManhole.position);
+    const toPos = new THREE.Vector3(...toManhole.position);
+    fromPos.y -= fromManhole.depth;
+    toPos.y -= toManhole.depth;
+    
+    const distance = fromPos.distanceTo(toPos);
+    const speed = (velocity * delta) / distance;
+
+    particles.current.forEach((particle, idx) => {
+      particle.progress += speed;
+      if (particle.progress > 1) {
+        particle.progress = 0;
+      }
+
+      const mesh = meshRefs.current[idx];
+      if (mesh) {
+        mesh.position.lerpVectors(fromPos, toPos, particle.progress);
+        // Add slight wobble for realism
+        mesh.position.y += Math.sin(particle.progress * Math.PI * 4) * 0.05;
+      }
+    });
+  });
+
+  if (!fromManhole || !toManhole || flowRate === 0) return null;
+
+  return (
+    <group>
+      {particles.current.map((particle, idx) => (
+        <mesh
+          key={particle.id}
+          ref={(el) => {
+            if (el) meshRefs.current[idx] = el;
+          }}
+        >
+          <sphereGeometry args={[0.15, 8, 8]} />
+          <meshStandardMaterial 
+            color="#06b6d4" 
+            emissive="#06b6d4" 
+            emissiveIntensity={0.5}
+            transparent
+            opacity={0.8}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+};
+
+const Pipe = ({ data, manholes, onClick, isSelected, flowRate }: { 
   data: PipeData; 
   manholes: ManholeData[]; 
   onClick: () => void;
   isSelected: boolean;
+  flowRate: number;
 }) => {
   const fromManhole = manholes.find((m) => m.id === data.from);
   const toManhole = manholes.find((m) => m.id === data.to);
@@ -92,6 +195,8 @@ const Pipe = ({ data, manholes, onClick, isSelected }: {
   const direction = new THREE.Vector3().subVectors(toPos, fromPos);
   const length = direction.length();
   const midpoint = new THREE.Vector3().addVectors(fromPos, toPos).multiplyScalar(0.5);
+
+  const velocity = calculateVelocity(data.diameter, data.slope, flowRate);
 
   return (
     <group>
@@ -127,6 +232,22 @@ const Pipe = ({ data, manholes, onClick, isSelected }: {
         dashSize={0.3}
         gapSize={0.2}
       />
+      
+      {/* Flow particles */}
+      <FlowParticles pipe={data} manholes={manholes} flowRate={flowRate} />
+      
+      {/* Velocity indicator at midpoint */}
+      {flowRate > 0 && (
+        <Text
+          position={[midpoint.x, midpoint.y + 1, midpoint.z]}
+          fontSize={0.3}
+          color="#06b6d4"
+          anchorX="center"
+          anchorY="middle"
+        >
+          {velocity.toFixed(2)} m/s
+        </Text>
+      )}
     </group>
   );
 };
@@ -143,18 +264,74 @@ const GroundPlane = () => {
 const Network3D = () => {
   const [selectedManhole, setSelectedManhole] = useState<string | null>(null);
   const [selectedPipe, setSelectedPipe] = useState<string | null>(null);
+  const [flowRate, setFlowRate] = useState<number>(3);
+  const [isAnimating, setIsAnimating] = useState<boolean>(true);
 
   const selectedManholeData = manholes.find((m) => m.id === selectedManhole);
   const selectedPipeData = pipes.find((p) => p.id === selectedPipe);
+  
+  const totalFlow = useMemo(() => {
+    if (!isAnimating) return 0;
+    return flowRate;
+  }, [flowRate, isAnimating]);
 
   return (
     <Card className="p-6 shadow-medium border-primary/10">
       <div className="mb-4">
-        <h3 className="text-xl font-bold text-foreground mb-2">3D Network Visualization</h3>
+        <h3 className="text-xl font-bold text-foreground mb-2">3D Network Visualization with Flow Animation</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Interactive 3D view showing elevation changes, pipe depths, and water surface profiles.
+          Interactive 3D view showing elevation changes, pipe depths, water surface profiles, and real-time flow animation.
           Click and drag to rotate, scroll to zoom, right-click to pan.
         </p>
+        
+        {/* Flow Controls */}
+        <div className="bg-muted/50 rounded-lg p-4 mb-4 border border-border">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h4 className="text-sm font-semibold text-foreground">Flow Rate Control</h4>
+              <p className="text-xs text-muted-foreground">Adjust to see real-time hydraulic changes</p>
+            </div>
+            <Badge 
+              variant={isAnimating ? "default" : "secondary"}
+              className="cursor-pointer"
+              onClick={() => setIsAnimating(!isAnimating)}
+            >
+              {isAnimating ? "Flowing" : "Paused"}
+            </Badge>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-muted-foreground w-20">Flow Rate:</span>
+              <Slider
+                value={[flowRate]}
+                onValueChange={(value) => setFlowRate(value[0])}
+                min={0}
+                max={10}
+                step={0.5}
+                className="flex-1"
+              />
+              <span className="text-sm font-medium text-foreground w-20 text-right">{flowRate.toFixed(1)} m³/s</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-3 text-xs">
+              <div className="bg-background/50 rounded p-2">
+                <span className="text-muted-foreground">Avg Velocity:</span>
+                <span className="ml-1 text-foreground font-medium">
+                  {pipes.length > 0 
+                    ? (pipes.reduce((sum, p) => sum + calculateVelocity(p.diameter, p.slope, totalFlow), 0) / pipes.length).toFixed(2)
+                    : "0.00"} m/s
+                </span>
+              </div>
+              <div className="bg-background/50 rounded p-2">
+                <span className="text-muted-foreground">Total Flow:</span>
+                <span className="ml-1 text-foreground font-medium">{totalFlow.toFixed(1)} m³/s</span>
+              </div>
+              <div className="bg-background/50 rounded p-2">
+                <span className="text-muted-foreground">Status:</span>
+                <span className="ml-1 text-foreground font-medium">{totalFlow > 0 ? "Active" : "Idle"}</span>
+              </div>
+            </div>
+          </div>
+        </div>
         
         <div className="flex flex-wrap gap-2 mb-4">
           <Badge variant="outline" className="bg-primary/10">
@@ -256,6 +433,7 @@ const Network3D = () => {
                 setSelectedManhole(null);
               }}
               isSelected={selectedPipe === pipe.id}
+              flowRate={totalFlow}
             />
           ))}
           
@@ -312,7 +490,7 @@ const Network3D = () => {
             diameter={selectedPipeData.diameter}
             slope={selectedPipeData.slope}
             flowDepth={0.65}
-            velocity={1.5}
+            velocity={calculateVelocity(selectedPipeData.diameter, selectedPipeData.slope, totalFlow)}
             manningN={0.013}
           />
         </div>
