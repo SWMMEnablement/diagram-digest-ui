@@ -8,9 +8,10 @@ import SimulationWorkflow from "@/components/diagrams/SimulationWorkflow";
 import DataIntegration from "@/components/diagrams/DataIntegration";
 import ProjectStructure from "@/components/diagrams/ProjectStructure";
 import HydraulicProcess from "@/components/diagrams/HydraulicProcess";
+import InteractiveNetwork from "@/components/diagrams/InteractiveNetwork";
 
 const Index = () => {
-  const [activeTab, setActiveTab] = useState("architecture");
+  const [activeTab, setActiveTab] = useState("interactive");
 
   return (
     <div className="min-h-screen bg-gradient-hero">
@@ -66,7 +67,11 @@ const Index = () => {
 
         {/* Interactive Diagrams */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 w-full h-auto gap-2 bg-card/50 p-2">
+          <TabsList className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 w-full h-auto gap-2 bg-card/50 p-2">
+            <TabsTrigger value="interactive" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Network className="w-4 h-4" />
+              <span className="hidden sm:inline">Interactive</span>
+            </TabsTrigger>
             <TabsTrigger value="architecture" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Layers className="w-4 h-4" />
               <span className="hidden sm:inline">Architecture</span>
@@ -93,9 +98,13 @@ const Index = () => {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="architecture" className="mt-6">
-            <SystemArchitecture />
-          </TabsContent>
+            <TabsContent value="interactive" className="mt-6">
+              <InteractiveNetwork />
+            </TabsContent>
+
+            <TabsContent value="architecture" className="mt-6">
+              <SystemArchitecture />
+            </TabsContent>
 
           <TabsContent value="components" className="mt-6">
             <NetworkComponents />
