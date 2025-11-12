@@ -4,6 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import * as THREE from "three";
+import CrossSectionView from "./CrossSectionView";
 
 interface ManholeData {
   id: string;
@@ -67,7 +68,12 @@ const Manhole = ({ data, onClick, isSelected }: { data: ManholeData; onClick: ()
   );
 };
 
-const Pipe = ({ data, manholes }: { data: PipeData; manholes: ManholeData[] }) => {
+const Pipe = ({ data, manholes, onClick, isSelected }: { 
+  data: PipeData; 
+  manholes: ManholeData[]; 
+  onClick: () => void;
+  isSelected: boolean;
+}) => {
   const fromManhole = manholes.find((m) => m.id === data.from);
   const toManhole = manholes.find((m) => m.id === data.to);
 
@@ -81,14 +87,31 @@ const Pipe = ({ data, manholes }: { data: PipeData; manholes: ManholeData[] }) =
   toPos.y -= toManhole.depth;
 
   const points = [fromPos, toPos];
+  
+  // Calculate pipe direction and length for clickable cylinder
+  const direction = new THREE.Vector3().subVectors(toPos, fromPos);
+  const length = direction.length();
+  const midpoint = new THREE.Vector3().addVectors(fromPos, toPos).multiplyScalar(0.5);
 
   return (
-    <>
+    <group>
+      {/* Invisible clickable cylinder */}
+      <mesh
+        position={[midpoint.x, midpoint.y, midpoint.z]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+      >
+        <cylinderGeometry args={[0.3, 0.3, length, 8]} />
+        <meshBasicMaterial transparent opacity={0} />
+      </mesh>
+      
       {/* Pipe line */}
       <Line
         points={points}
-        color="#0ea5e9"
-        lineWidth={3}
+        color={isSelected ? "#60a5fa" : "#0ea5e9"}
+        lineWidth={isSelected ? 5 : 3}
       />
       
       {/* Water surface profile (slightly above pipe) */}
@@ -104,7 +127,7 @@ const Pipe = ({ data, manholes }: { data: PipeData; manholes: ManholeData[] }) =
         dashSize={0.3}
         gapSize={0.2}
       />
-    </>
+    </group>
   );
 };
 
@@ -119,8 +142,10 @@ const GroundPlane = () => {
 
 const Network3D = () => {
   const [selectedManhole, setSelectedManhole] = useState<string | null>(null);
+  const [selectedPipe, setSelectedPipe] = useState<string | null>(null);
 
-  const selectedData = manholes.find((m) => m.id === selectedManhole);
+  const selectedManholeData = manholes.find((m) => m.id === selectedManhole);
+  const selectedPipeData = pipes.find((p) => p.id === selectedPipe);
 
   return (
     <Card className="p-6 shadow-medium border-primary/10">
@@ -146,21 +171,45 @@ const Network3D = () => {
           </Badge>
         </div>
 
-        {selectedData && (
+        {selectedManholeData && (
           <div className="bg-primary/5 border border-primary/20 rounded-lg p-4 mb-4">
-            <h4 className="font-semibold text-foreground mb-2">{selectedData.id}</h4>
+            <h4 className="font-semibold text-foreground mb-2">{selectedManholeData.id}</h4>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div>
                 <span className="text-muted-foreground">Elevation:</span>
-                <span className="ml-2 text-foreground font-medium">{selectedData.elevation}m</span>
+                <span className="ml-2 text-foreground font-medium">{selectedManholeData.elevation}m</span>
               </div>
               <div>
                 <span className="text-muted-foreground">Depth:</span>
-                <span className="ml-2 text-foreground font-medium">{selectedData.depth}m</span>
+                <span className="ml-2 text-foreground font-medium">{selectedManholeData.depth}m</span>
               </div>
               <div>
                 <span className="text-muted-foreground">Invert:</span>
-                <span className="ml-2 text-foreground font-medium">{(selectedData.elevation - selectedData.depth).toFixed(1)}m</span>
+                <span className="ml-2 text-foreground font-medium">{(selectedManholeData.elevation - selectedManholeData.depth).toFixed(1)}m</span>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {selectedPipeData && (
+          <div className="bg-secondary/5 border border-secondary/20 rounded-lg p-4 mb-4">
+            <h4 className="font-semibold text-foreground mb-2">{selectedPipeData.id}</h4>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div>
+                <span className="text-muted-foreground">From:</span>
+                <span className="ml-2 text-foreground font-medium">{selectedPipeData.from}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">To:</span>
+                <span className="ml-2 text-foreground font-medium">{selectedPipeData.to}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Diameter:</span>
+                <span className="ml-2 text-foreground font-medium">{selectedPipeData.diameter}m</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Slope:</span>
+                <span className="ml-2 text-foreground font-medium">{selectedPipeData.slope}%</span>
               </div>
             </div>
           </div>
@@ -198,7 +247,16 @@ const Network3D = () => {
           ))}
           
           {pipes.map((pipe) => (
-            <Pipe key={pipe.id} data={pipe} manholes={manholes} />
+            <Pipe 
+              key={pipe.id} 
+              data={pipe} 
+              manholes={manholes}
+              onClick={() => {
+                setSelectedPipe(pipe.id);
+                setSelectedManhole(null);
+              }}
+              isSelected={selectedPipe === pipe.id}
+            />
           ))}
           
           {/* Grid helper */}
@@ -246,6 +304,19 @@ const Network3D = () => {
           </p>
         </div>
       </div>
+      
+      {selectedPipeData && (
+        <div className="mt-6">
+          <CrossSectionView
+            pipeId={selectedPipeData.id}
+            diameter={selectedPipeData.diameter}
+            slope={selectedPipeData.slope}
+            flowDepth={0.65}
+            velocity={1.5}
+            manningN={0.013}
+          />
+        </div>
+      )}
     </Card>
   );
 };
