@@ -114,3 +114,46 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+
+/* Flow Animation Keyframes */
+@keyframes flow-1 {
+  0% {
+    left: 0%;
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes flow-2 {
+  0% {
+    left: 0%;
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+.animate-flow-1 {
+  animation: flow-1 2s ease-in-out infinite;
+}
+
+.animate-flow-2 {
+  animation: flow-2 2s ease-in-out infinite 1s;
+}
