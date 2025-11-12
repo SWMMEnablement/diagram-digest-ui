@@ -9,6 +9,7 @@ import DataIntegration from "@/components/diagrams/DataIntegration";
 import ProjectStructure from "@/components/diagrams/ProjectStructure";
 import HydraulicProcess from "@/components/diagrams/HydraulicProcess";
 import InteractiveNetwork from "@/components/diagrams/InteractiveNetwork";
+import TechnicalGlossary from "@/components/diagrams/TechnicalGlossary";
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState("interactive");
@@ -67,10 +68,14 @@ const Index = () => {
 
         {/* Interactive Diagrams */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 w-full h-auto gap-2 bg-card/50 p-2">
+          <TabsList className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 w-full h-auto gap-2 bg-card/50 p-2">
             <TabsTrigger value="interactive" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Network className="w-4 h-4" />
               <span className="hidden sm:inline">Interactive</span>
+            </TabsTrigger>
+            <TabsTrigger value="glossary" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Database className="w-4 h-4" />
+              <span className="hidden sm:inline">Glossary</span>
             </TabsTrigger>
             <TabsTrigger value="architecture" className="flex items-center gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Layers className="w-4 h-4" />
@@ -100,6 +105,10 @@ const Index = () => {
 
             <TabsContent value="interactive" className="mt-6">
               <InteractiveNetwork />
+            </TabsContent>
+
+            <TabsContent value="glossary" className="mt-6">
+              <TechnicalGlossary />
             </TabsContent>
 
             <TabsContent value="architecture" className="mt-6">
