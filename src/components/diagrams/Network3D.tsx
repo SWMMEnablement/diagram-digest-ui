@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState, useRef, useMemo, useEffect } from "react";
 import * as THREE from "three";
 import { CloudRain, AlertTriangle, Play, Pause, RotateCcw } from "lucide-react";
@@ -41,6 +42,88 @@ const pipes: PipeData[] = [
   { id: "P-4", from: "MH-4", to: "MH-5", diameter: 0.45, slope: 0.5 },
 ];
 
+// Design Storm Patterns based on return periods
+interface StormPattern {
+  id: string;
+  name: string;
+  description: string;
+  returnPeriod: string;
+  peakIntensity: number; // mm/hr
+  duration: number; // seconds
+  timeToPeak: number; // fraction of duration (0-1)
+  recessionFactor: number; // controls falling limb steepness
+  color: string;
+}
+
+const stormPatterns: StormPattern[] = [
+  {
+    id: "2-year",
+    name: "2-Year Storm",
+    description: "Minor flooding event",
+    returnPeriod: "2-year (50% annual probability)",
+    peakIntensity: 5,
+    duration: 60,
+    timeToPeak: 0.33,
+    recessionFactor: 1.5,
+    color: "#3b82f6"
+  },
+  {
+    id: "5-year",
+    name: "5-Year Storm", 
+    description: "Moderate flooding event",
+    returnPeriod: "5-year (20% annual probability)",
+    peakIntensity: 7.5,
+    duration: 75,
+    timeToPeak: 0.30,
+    recessionFactor: 1.8,
+    color: "#f59e0b"
+  },
+  {
+    id: "10-year",
+    name: "10-Year Storm",
+    description: "Significant flooding event",
+    returnPeriod: "10-year (10% annual probability)",
+    peakIntensity: 10,
+    duration: 90,
+    timeToPeak: 0.28,
+    recessionFactor: 2.0,
+    color: "#ef4444"
+  },
+  {
+    id: "25-year",
+    name: "25-Year Storm",
+    description: "Major flooding event",
+    returnPeriod: "25-year (4% annual probability)",
+    peakIntensity: 13,
+    duration: 100,
+    timeToPeak: 0.25,
+    recessionFactor: 2.2,
+    color: "#dc2626"
+  },
+  {
+    id: "100-year",
+    name: "100-Year Storm",
+    description: "Extreme flooding event",
+    returnPeriod: "100-year (1% annual probability)",
+    peakIntensity: 18,
+    duration: 120,
+    timeToPeak: 0.22,
+    recessionFactor: 2.5,
+    color: "#991b1b"
+  },
+  {
+    id: "custom",
+    name: "Custom Storm",
+    description: "User-defined parameters",
+    returnPeriod: "User-defined",
+    peakIntensity: 8,
+    duration: 60,
+    timeToPeak: 0.33,
+    recessionFactor: 1.5,
+    color: "#06b6d4"
+  }
+];
+
 // Calculate velocity using Manning's equation
 const calculateVelocity = (diameter: number, slope: number, flowRate: number, manningN: number = 0.013): number => {
   // Q = (1/n) * A * R^(2/3) * S^(1/2)
@@ -69,17 +152,25 @@ const calculatePipeCapacity = (diameter: number, slope: number, manningN: number
   return capacity * 5; // Scale to match our flow rate units
 };
 
-// Storm event rainfall intensity patterns
-const getStormIntensity = (timeElapsed: number, stormDuration: number, peakIntensity: number): number => {
-  // Triangular hydrograph pattern - peak at 1/3 duration
-  const peakTime = stormDuration / 3;
+// Storm event rainfall intensity patterns with configurable hydrograph shape
+const getStormIntensity = (
+  timeElapsed: number, 
+  stormDuration: number, 
+  peakIntensity: number,
+  timeToPeak: number = 0.33,
+  recessionFactor: number = 1.5
+): number => {
+  // Modified triangular/curved hydrograph pattern
+  const peakTime = stormDuration * timeToPeak;
   
   if (timeElapsed < peakTime) {
-    // Rising limb
-    return (timeElapsed / peakTime) * peakIntensity;
+    // Rising limb - can be curved for more realistic pattern
+    const progress = timeElapsed / peakTime;
+    return Math.pow(progress, 0.8) * peakIntensity; // Slight curve
   } else if (timeElapsed < stormDuration) {
-    // Falling limb
-    return peakIntensity * (1 - (timeElapsed - peakTime) / (stormDuration - peakTime));
+    // Falling limb - steeper for larger storms (higher recession factor)
+    const progress = (timeElapsed - peakTime) / (stormDuration - peakTime);
+    return peakIntensity * Math.pow(1 - progress, recessionFactor);
   }
   
   return 0;
@@ -321,10 +412,15 @@ const Network3D = () => {
   
   // Storm simulation state
   const [isStormActive, setIsStormActive] = useState<boolean>(false);
+  const [selectedStormPattern, setSelectedStormPattern] = useState<string>("10-year");
   const [stormDuration, setStormDuration] = useState<number>(60); // seconds
   const [peakRainfall, setPeakRainfall] = useState<number>(8); // mm/hr -> flow units
   const [stormTimeElapsed, setStormTimeElapsed] = useState<number>(0);
   const [peakFlowReached, setPeakFlowReached] = useState<number>(0);
+  
+  const currentStormPattern = useMemo(() => {
+    return stormPatterns.find(p => p.id === selectedStormPattern) || stormPatterns[2];
+  }, [selectedStormPattern]);
 
   const selectedManholeData = manholes.find((m) => m.id === selectedManhole);
   const selectedPipeData = pipes.find((p) => p.id === selectedPipe);
@@ -332,8 +428,23 @@ const Network3D = () => {
   // Calculate current rainfall intensity and flow based on storm
   const currentRainfallIntensity = useMemo(() => {
     if (!isStormActive) return 0;
-    return getStormIntensity(stormTimeElapsed, stormDuration, peakRainfall);
-  }, [isStormActive, stormTimeElapsed, stormDuration, peakRainfall]);
+    
+    // Use custom values if custom pattern, otherwise use pattern defaults
+    const intensity = selectedStormPattern === "custom" 
+      ? peakRainfall 
+      : currentStormPattern.peakIntensity;
+    const duration = selectedStormPattern === "custom"
+      ? stormDuration
+      : currentStormPattern.duration;
+    
+    return getStormIntensity(
+      stormTimeElapsed, 
+      duration, 
+      intensity,
+      currentStormPattern.timeToPeak,
+      currentStormPattern.recessionFactor
+    );
+  }, [isStormActive, stormTimeElapsed, stormDuration, peakRainfall, selectedStormPattern, currentStormPattern]);
   
   const currentStormFlow = useMemo(() => {
     return rainfallToFlowRate(currentRainfallIntensity);
@@ -361,13 +472,20 @@ const Network3D = () => {
       setStormTimeElapsed(prev => {
         const next = prev + 0.1; // 100ms increments
         
+        // Use pattern-specific duration
+        const duration = selectedStormPattern === "custom"
+          ? stormDuration
+          : currentStormPattern.duration;
+        
         // Track peak flow
-        const intensity = getStormIntensity(next, stormDuration, peakRainfall);
+        const intensity = selectedStormPattern === "custom"
+          ? getStormIntensity(next, stormDuration, peakRainfall, currentStormPattern.timeToPeak, currentStormPattern.recessionFactor)
+          : getStormIntensity(next, currentStormPattern.duration, currentStormPattern.peakIntensity, currentStormPattern.timeToPeak, currentStormPattern.recessionFactor);
         const flow = rainfallToFlowRate(intensity);
         setPeakFlowReached(prevPeak => Math.max(prevPeak, flow));
         
         // Stop storm when duration reached
-        if (next >= stormDuration) {
+        if (next >= duration) {
           setIsStormActive(false);
           return 0;
         }
@@ -376,13 +494,19 @@ const Network3D = () => {
     }, 100);
     
     return () => clearInterval(interval);
-  }, [isStormActive, isAnimating, stormDuration, peakRainfall]);
+  }, [isStormActive, isAnimating, stormDuration, peakRainfall, selectedStormPattern, currentStormPattern]);
   
   const startStorm = () => {
     setStormTimeElapsed(0);
     setPeakFlowReached(0);
     setIsStormActive(true);
     setIsAnimating(true);
+    
+    // If not custom, update display values to match pattern
+    if (selectedStormPattern !== "custom") {
+      setStormDuration(currentStormPattern.duration);
+      setPeakRainfall(currentStormPattern.peakIntensity);
+    }
   };
   
   const stopStorm = () => {
@@ -411,8 +535,8 @@ const Network3D = () => {
             <div className="flex items-center gap-2">
               <CloudRain className="w-5 h-5 text-blue-500" />
               <div>
-                <h4 className="text-sm font-semibold text-foreground">Storm Event Simulation</h4>
-                <p className="text-xs text-muted-foreground">Simulate rainfall events with varying intensities</p>
+                <h4 className="text-sm font-semibold text-foreground">Design Storm Event</h4>
+                <p className="text-xs text-muted-foreground">Select storm pattern or customize parameters</p>
               </div>
             </div>
             <div className="flex gap-2">
@@ -431,67 +555,136 @@ const Network3D = () => {
             </div>
           </div>
           
+          {/* Storm Pattern Selection */}
+          <div className="mb-4 space-y-2">
+            <label className="text-sm font-medium text-foreground">Storm Pattern</label>
+            <Select
+              value={selectedStormPattern}
+              onValueChange={(value) => {
+                setSelectedStormPattern(value);
+                const pattern = stormPatterns.find(p => p.id === value);
+                if (pattern && value !== "custom") {
+                  setStormDuration(pattern.duration);
+                  setPeakRainfall(pattern.peakIntensity);
+                }
+              }}
+              disabled={isStormActive}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {stormPatterns.map((pattern) => (
+                  <SelectItem key={pattern.id} value={pattern.id}>
+                    <div className="flex items-center gap-2">
+                      <div 
+                        className="w-3 h-3 rounded-full" 
+                        style={{ backgroundColor: pattern.color }}
+                      />
+                      <div>
+                        <div className="font-medium">{pattern.name}</div>
+                        <div className="text-xs text-muted-foreground">{pattern.description}</div>
+                      </div>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            
+            {selectedStormPattern !== "custom" && (
+              <div className="bg-background/50 rounded p-2 text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Return Period:</span>
+                  <span className="text-foreground font-medium">{currentStormPattern.returnPeriod}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Peak Intensity:</span>
+                  <span className="text-foreground font-medium">{currentStormPattern.peakIntensity} mm/h</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Duration:</span>
+                  <span className="text-foreground font-medium">{currentStormPattern.duration}s</span>
+                </div>
+              </div>
+            )}
+          </div>
+          
+          {/* Custom Storm Parameters */}
+          {selectedStormPattern === "custom" && (
+            <div className="space-y-3 mb-4">
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-muted-foreground w-28">Duration:</span>
+                <Slider
+                  value={[stormDuration]}
+                  onValueChange={(value) => setStormDuration(value[0])}
+                  min={10}
+                  max={180}
+                  step={10}
+                  disabled={isStormActive}
+                  className="flex-1"
+                />
+                <span className="text-sm font-medium text-foreground w-16 text-right">{stormDuration}s</span>
+              </div>
+              
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-muted-foreground w-28">Peak Rainfall:</span>
+                <Slider
+                  value={[peakRainfall]}
+                  onValueChange={(value) => setPeakRainfall(value[0])}
+                  min={2}
+                  max={20}
+                  step={0.5}
+                  disabled={isStormActive}
+                  className="flex-1"
+                />
+                <span className="text-sm font-medium text-foreground w-16 text-right">{peakRainfall} mm/h</span>
+              </div>
+            </div>
+          )}
+          
+          {/* Storm Progress */}
           <div className="space-y-3">
-            <div className="flex items-center gap-4">
-              <span className="text-sm text-muted-foreground w-28">Duration:</span>
-              <Slider
-                value={[stormDuration]}
-                onValueChange={(value) => setStormDuration(value[0])}
-                min={10}
-                max={180}
-                step={10}
-                disabled={isStormActive}
-                className="flex-1"
-              />
-              <span className="text-sm font-medium text-foreground w-16 text-right">{stormDuration}s</span>
-            </div>
-            
-            <div className="flex items-center gap-4">
-              <span className="text-sm text-muted-foreground w-28">Peak Rainfall:</span>
-              <Slider
-                value={[peakRainfall]}
-                onValueChange={(value) => setPeakRainfall(value[0])}
-                min={2}
-                max={15}
-                step={0.5}
-                disabled={isStormActive}
-                className="flex-1"
-              />
-              <span className="text-sm font-medium text-foreground w-16 text-right">{peakRainfall} mm/h</span>
-            </div>
             
             {isStormActive && (
-              <div className="grid grid-cols-4 gap-2 mt-3 text-xs">
-                <div className="bg-background/50 rounded p-2">
-                  <span className="text-muted-foreground">Time:</span>
-                  <span className="ml-1 text-foreground font-medium">{stormTimeElapsed.toFixed(1)}s</span>
+              <>
+                <div className="grid grid-cols-4 gap-2 text-xs">
+                  <div className="bg-background/50 rounded p-2">
+                    <span className="text-muted-foreground">Time:</span>
+                    <span className="ml-1 text-foreground font-medium">{stormTimeElapsed.toFixed(1)}s</span>
+                  </div>
+                  <div className="bg-background/50 rounded p-2">
+                    <span className="text-muted-foreground">Rainfall:</span>
+                    <span className="ml-1 text-foreground font-medium">{currentRainfallIntensity.toFixed(1)} mm/h</span>
+                  </div>
+                  <div className="bg-background/50 rounded p-2">
+                    <span className="text-muted-foreground">Flow:</span>
+                    <span className="ml-1 text-foreground font-medium">{currentStormFlow.toFixed(1)} m³/s</span>
+                  </div>
+                  <div className="bg-background/50 rounded p-2">
+                    <span className="text-muted-foreground">Peak Flow:</span>
+                    <span className="ml-1 text-foreground font-medium">{peakFlowReached.toFixed(1)} m³/s</span>
+                  </div>
                 </div>
-                <div className="bg-background/50 rounded p-2">
-                  <span className="text-muted-foreground">Rainfall:</span>
-                  <span className="ml-1 text-foreground font-medium">{currentRainfallIntensity.toFixed(1)} mm/h</span>
+                
+                {/* Progress bar */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Progress</span>
+                    <span>{((stormTimeElapsed / (selectedStormPattern === "custom" ? stormDuration : currentStormPattern.duration)) * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="h-2 bg-background/50 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full transition-all duration-100"
+                      style={{ 
+                        width: `${(stormTimeElapsed / (selectedStormPattern === "custom" ? stormDuration : currentStormPattern.duration)) * 100}%`,
+                        backgroundColor: currentStormPattern.color
+                      }}
+                    />
+                  </div>
                 </div>
-                <div className="bg-background/50 rounded p-2">
-                  <span className="text-muted-foreground">Flow:</span>
-                  <span className="ml-1 text-foreground font-medium">{currentStormFlow.toFixed(1)} m³/s</span>
-                </div>
-                <div className="bg-background/50 rounded p-2">
-                  <span className="text-muted-foreground">Peak Flow:</span>
-                  <span className="ml-1 text-foreground font-medium">{peakFlowReached.toFixed(1)} m³/s</span>
-                </div>
-              </div>
+              </>
             )}
             
-            {/* Progress bar */}
-            {isStormActive && (
-              <div className="space-y-1">
-                <div className="h-2 bg-background/50 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-100"
-                    style={{ width: `${(stormTimeElapsed / stormDuration) * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
           </div>
         </div>
         
