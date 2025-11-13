@@ -3,8 +3,11 @@ import { OrbitControls, Text, Line, Sphere, Cylinder } from "@react-three/drei";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
-import { useState, useRef, useMemo } from "react";
+import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useState, useRef, useMemo, useEffect } from "react";
 import * as THREE from "three";
+import { CloudRain, AlertTriangle, Play, Pause, RotateCcw } from "lucide-react";
 import CrossSectionView from "./CrossSectionView";
 
 interface ManholeData {
@@ -53,6 +56,39 @@ const calculateVelocity = (diameter: number, slope: number, flowRate: number, ma
   
   // Scale by flow rate factor
   return velocity * (flowRate / 5); // Base velocity at flow rate of 5
+};
+
+// Calculate pipe capacity using Manning's equation (full pipe flow)
+const calculatePipeCapacity = (diameter: number, slope: number, manningN: number = 0.013): number => {
+  const radius = diameter / 2;
+  const area = Math.PI * radius * radius;
+  const hydraulicRadius = radius / 2; // Assuming half-full as design capacity
+  
+  // Q = (1/n) * A * R^(2/3) * S^(1/2)
+  const capacity = (1 / manningN) * area * Math.pow(hydraulicRadius, 2/3) * Math.pow(slope / 100, 0.5);
+  return capacity * 5; // Scale to match our flow rate units
+};
+
+// Storm event rainfall intensity patterns
+const getStormIntensity = (timeElapsed: number, stormDuration: number, peakIntensity: number): number => {
+  // Triangular hydrograph pattern - peak at 1/3 duration
+  const peakTime = stormDuration / 3;
+  
+  if (timeElapsed < peakTime) {
+    // Rising limb
+    return (timeElapsed / peakTime) * peakIntensity;
+  } else if (timeElapsed < stormDuration) {
+    // Falling limb
+    return peakIntensity * (1 - (timeElapsed - peakTime) / (stormDuration - peakTime));
+  }
+  
+  return 0;
+};
+
+// Convert rainfall intensity to flow rate (simplified rational method)
+const rainfallToFlowRate = (intensity: number, catchmentArea: number = 1.0, runoffCoeff: number = 0.7): number => {
+  // Q = C * I * A (where C is runoff coefficient, I is intensity, A is area)
+  return runoffCoeff * intensity * catchmentArea;
 };
 
 interface FlowParticle {
@@ -170,12 +206,13 @@ const FlowParticles = ({
   );
 };
 
-const Pipe = ({ data, manholes, onClick, isSelected, flowRate }: { 
+const Pipe = ({ data, manholes, onClick, isSelected, flowRate, showCapacityWarning }: { 
   data: PipeData; 
   manholes: ManholeData[]; 
   onClick: () => void;
   isSelected: boolean;
   flowRate: number;
+  showCapacityWarning: boolean;
 }) => {
   const fromManhole = manholes.find((m) => m.id === data.from);
   const toManhole = manholes.find((m) => m.id === data.to);
@@ -197,6 +234,8 @@ const Pipe = ({ data, manholes, onClick, isSelected, flowRate }: {
   const midpoint = new THREE.Vector3().addVectors(fromPos, toPos).multiplyScalar(0.5);
 
   const velocity = calculateVelocity(data.diameter, data.slope, flowRate);
+  const capacity = calculatePipeCapacity(data.diameter, data.slope);
+  const isOverCapacity = flowRate > capacity;
 
   return (
     <group>
@@ -215,7 +254,7 @@ const Pipe = ({ data, manholes, onClick, isSelected, flowRate }: {
       {/* Pipe line */}
       <Line
         points={points}
-        color={isSelected ? "#60a5fa" : "#0ea5e9"}
+        color={isOverCapacity && showCapacityWarning ? "#ef4444" : (isSelected ? "#60a5fa" : "#0ea5e9")}
         lineWidth={isSelected ? 5 : 3}
       />
       
@@ -241,11 +280,24 @@ const Pipe = ({ data, manholes, onClick, isSelected, flowRate }: {
         <Text
           position={[midpoint.x, midpoint.y + 1, midpoint.z]}
           fontSize={0.3}
-          color="#06b6d4"
+          color={isOverCapacity && showCapacityWarning ? "#ef4444" : "#06b6d4"}
           anchorX="center"
           anchorY="middle"
         >
           {velocity.toFixed(2)} m/s
+        </Text>
+      )}
+      
+      {/* Capacity warning indicator */}
+      {isOverCapacity && showCapacityWarning && (
+        <Text
+          position={[midpoint.x, midpoint.y + 1.5, midpoint.z]}
+          fontSize={0.25}
+          color="#ef4444"
+          anchorX="center"
+          anchorY="middle"
+        >
+          ⚠ OVER CAPACITY
         </Text>
       )}
     </group>
@@ -266,14 +318,83 @@ const Network3D = () => {
   const [selectedPipe, setSelectedPipe] = useState<string | null>(null);
   const [flowRate, setFlowRate] = useState<number>(3);
   const [isAnimating, setIsAnimating] = useState<boolean>(true);
+  
+  // Storm simulation state
+  const [isStormActive, setIsStormActive] = useState<boolean>(false);
+  const [stormDuration, setStormDuration] = useState<number>(60); // seconds
+  const [peakRainfall, setPeakRainfall] = useState<number>(8); // mm/hr -> flow units
+  const [stormTimeElapsed, setStormTimeElapsed] = useState<number>(0);
+  const [peakFlowReached, setPeakFlowReached] = useState<number>(0);
 
   const selectedManholeData = manholes.find((m) => m.id === selectedManhole);
   const selectedPipeData = pipes.find((p) => p.id === selectedPipe);
   
+  // Calculate current rainfall intensity and flow based on storm
+  const currentRainfallIntensity = useMemo(() => {
+    if (!isStormActive) return 0;
+    return getStormIntensity(stormTimeElapsed, stormDuration, peakRainfall);
+  }, [isStormActive, stormTimeElapsed, stormDuration, peakRainfall]);
+  
+  const currentStormFlow = useMemo(() => {
+    return rainfallToFlowRate(currentRainfallIntensity);
+  }, [currentRainfallIntensity]);
+  
   const totalFlow = useMemo(() => {
     if (!isAnimating) return 0;
+    if (isStormActive) return currentStormFlow;
     return flowRate;
-  }, [flowRate, isAnimating]);
+  }, [flowRate, isAnimating, isStormActive, currentStormFlow]);
+  
+  // Check for capacity warnings
+  const capacityWarnings = useMemo(() => {
+    return pipes.filter(pipe => {
+      const capacity = calculatePipeCapacity(pipe.diameter, pipe.slope);
+      return totalFlow > capacity;
+    });
+  }, [totalFlow]);
+  
+  // Update storm time
+  useEffect(() => {
+    if (!isStormActive || !isAnimating) return;
+    
+    const interval = setInterval(() => {
+      setStormTimeElapsed(prev => {
+        const next = prev + 0.1; // 100ms increments
+        
+        // Track peak flow
+        const intensity = getStormIntensity(next, stormDuration, peakRainfall);
+        const flow = rainfallToFlowRate(intensity);
+        setPeakFlowReached(prevPeak => Math.max(prevPeak, flow));
+        
+        // Stop storm when duration reached
+        if (next >= stormDuration) {
+          setIsStormActive(false);
+          return 0;
+        }
+        return next;
+      });
+    }, 100);
+    
+    return () => clearInterval(interval);
+  }, [isStormActive, isAnimating, stormDuration, peakRainfall]);
+  
+  const startStorm = () => {
+    setStormTimeElapsed(0);
+    setPeakFlowReached(0);
+    setIsStormActive(true);
+    setIsAnimating(true);
+  };
+  
+  const stopStorm = () => {
+    setIsStormActive(false);
+    setStormTimeElapsed(0);
+  };
+  
+  const resetStorm = () => {
+    setIsStormActive(false);
+    setStormTimeElapsed(0);
+    setPeakFlowReached(0);
+  };
 
   return (
     <Card className="p-6 shadow-medium border-primary/10">
@@ -284,54 +405,156 @@ const Network3D = () => {
           Click and drag to rotate, scroll to zoom, right-click to pan.
         </p>
         
-        {/* Flow Controls */}
-        <div className="bg-muted/50 rounded-lg p-4 mb-4 border border-border">
+        {/* Storm Event Simulation */}
+        <div className="bg-gradient-to-br from-blue-500/10 to-cyan-500/10 rounded-lg p-4 mb-4 border border-blue-500/20">
           <div className="flex items-center justify-between mb-3">
-            <div>
-              <h4 className="text-sm font-semibold text-foreground">Flow Rate Control</h4>
-              <p className="text-xs text-muted-foreground">Adjust to see real-time hydraulic changes</p>
+            <div className="flex items-center gap-2">
+              <CloudRain className="w-5 h-5 text-blue-500" />
+              <div>
+                <h4 className="text-sm font-semibold text-foreground">Storm Event Simulation</h4>
+                <p className="text-xs text-muted-foreground">Simulate rainfall events with varying intensities</p>
+              </div>
             </div>
-            <Badge 
-              variant={isAnimating ? "default" : "secondary"}
-              className="cursor-pointer"
-              onClick={() => setIsAnimating(!isAnimating)}
-            >
-              {isAnimating ? "Flowing" : "Paused"}
-            </Badge>
+            <div className="flex gap-2">
+              {!isStormActive ? (
+                <Button size="sm" onClick={startStorm} className="gap-1">
+                  <Play className="w-3 h-3" /> Start Storm
+                </Button>
+              ) : (
+                <Button size="sm" variant="secondary" onClick={stopStorm} className="gap-1">
+                  <Pause className="w-3 h-3" /> Stop
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={resetStorm}>
+                <RotateCcw className="w-3 h-3" />
+              </Button>
+            </div>
           </div>
-          <div className="space-y-2">
+          
+          <div className="space-y-3">
             <div className="flex items-center gap-4">
-              <span className="text-sm text-muted-foreground w-20">Flow Rate:</span>
+              <span className="text-sm text-muted-foreground w-28">Duration:</span>
               <Slider
-                value={[flowRate]}
-                onValueChange={(value) => setFlowRate(value[0])}
-                min={0}
-                max={10}
-                step={0.5}
+                value={[stormDuration]}
+                onValueChange={(value) => setStormDuration(value[0])}
+                min={10}
+                max={180}
+                step={10}
+                disabled={isStormActive}
                 className="flex-1"
               />
-              <span className="text-sm font-medium text-foreground w-20 text-right">{flowRate.toFixed(1)} m³/s</span>
+              <span className="text-sm font-medium text-foreground w-16 text-right">{stormDuration}s</span>
             </div>
-            <div className="grid grid-cols-3 gap-2 mt-3 text-xs">
-              <div className="bg-background/50 rounded p-2">
-                <span className="text-muted-foreground">Avg Velocity:</span>
-                <span className="ml-1 text-foreground font-medium">
-                  {pipes.length > 0 
-                    ? (pipes.reduce((sum, p) => sum + calculateVelocity(p.diameter, p.slope, totalFlow), 0) / pipes.length).toFixed(2)
-                    : "0.00"} m/s
-                </span>
+            
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-muted-foreground w-28">Peak Rainfall:</span>
+              <Slider
+                value={[peakRainfall]}
+                onValueChange={(value) => setPeakRainfall(value[0])}
+                min={2}
+                max={15}
+                step={0.5}
+                disabled={isStormActive}
+                className="flex-1"
+              />
+              <span className="text-sm font-medium text-foreground w-16 text-right">{peakRainfall} mm/h</span>
+            </div>
+            
+            {isStormActive && (
+              <div className="grid grid-cols-4 gap-2 mt-3 text-xs">
+                <div className="bg-background/50 rounded p-2">
+                  <span className="text-muted-foreground">Time:</span>
+                  <span className="ml-1 text-foreground font-medium">{stormTimeElapsed.toFixed(1)}s</span>
+                </div>
+                <div className="bg-background/50 rounded p-2">
+                  <span className="text-muted-foreground">Rainfall:</span>
+                  <span className="ml-1 text-foreground font-medium">{currentRainfallIntensity.toFixed(1)} mm/h</span>
+                </div>
+                <div className="bg-background/50 rounded p-2">
+                  <span className="text-muted-foreground">Flow:</span>
+                  <span className="ml-1 text-foreground font-medium">{currentStormFlow.toFixed(1)} m³/s</span>
+                </div>
+                <div className="bg-background/50 rounded p-2">
+                  <span className="text-muted-foreground">Peak Flow:</span>
+                  <span className="ml-1 text-foreground font-medium">{peakFlowReached.toFixed(1)} m³/s</span>
+                </div>
               </div>
-              <div className="bg-background/50 rounded p-2">
-                <span className="text-muted-foreground">Total Flow:</span>
-                <span className="ml-1 text-foreground font-medium">{totalFlow.toFixed(1)} m³/s</span>
+            )}
+            
+            {/* Progress bar */}
+            {isStormActive && (
+              <div className="space-y-1">
+                <div className="h-2 bg-background/50 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-100"
+                    style={{ width: `${(stormTimeElapsed / stormDuration) * 100}%` }}
+                  />
+                </div>
               </div>
-              <div className="bg-background/50 rounded p-2">
-                <span className="text-muted-foreground">Status:</span>
-                <span className="ml-1 text-foreground font-medium">{totalFlow > 0 ? "Active" : "Idle"}</span>
+            )}
+          </div>
+        </div>
+        
+        {/* Capacity Warnings */}
+        {capacityWarnings.length > 0 && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              <strong>Capacity Warning:</strong> {capacityWarnings.length} pipe(s) exceeding capacity - {capacityWarnings.map(p => p.id).join(", ")}
+            </AlertDescription>
+          </Alert>
+        )}
+        
+        {/* Manual Flow Controls */}
+        {!isStormActive && (
+          <div className="bg-muted/50 rounded-lg p-4 mb-4 border border-border">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h4 className="text-sm font-semibold text-foreground">Manual Flow Control</h4>
+                <p className="text-xs text-muted-foreground">Adjust to see real-time hydraulic changes</p>
+              </div>
+              <Badge 
+                variant={isAnimating ? "default" : "secondary"}
+                className="cursor-pointer"
+                onClick={() => setIsAnimating(!isAnimating)}
+              >
+                {isAnimating ? "Flowing" : "Paused"}
+              </Badge>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-muted-foreground w-20">Flow Rate:</span>
+                <Slider
+                  value={[flowRate]}
+                  onValueChange={(value) => setFlowRate(value[0])}
+                  min={0}
+                  max={10}
+                  step={0.5}
+                  className="flex-1"
+                />
+                <span className="text-sm font-medium text-foreground w-20 text-right">{flowRate.toFixed(1)} m³/s</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-3 text-xs">
+                <div className="bg-background/50 rounded p-2">
+                  <span className="text-muted-foreground">Avg Velocity:</span>
+                  <span className="ml-1 text-foreground font-medium">
+                    {pipes.length > 0 
+                      ? (pipes.reduce((sum, p) => sum + calculateVelocity(p.diameter, p.slope, totalFlow), 0) / pipes.length).toFixed(2)
+                      : "0.00"} m/s
+                  </span>
+                </div>
+                <div className="bg-background/50 rounded p-2">
+                  <span className="text-muted-foreground">Total Flow:</span>
+                  <span className="ml-1 text-foreground font-medium">{totalFlow.toFixed(1)} m³/s</span>
+                </div>
+                <div className="bg-background/50 rounded p-2">
+                  <span className="text-muted-foreground">Status:</span>
+                  <span className="ml-1 text-foreground font-medium">{totalFlow > 0 ? "Active" : "Idle"}</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
         
         <div className="flex flex-wrap gap-2 mb-4">
           <Badge variant="outline" className="bg-primary/10">
@@ -434,6 +657,7 @@ const Network3D = () => {
               }}
               isSelected={selectedPipe === pipe.id}
               flowRate={totalFlow}
+              showCapacityWarning={capacityWarnings.some(w => w.id === pipe.id)}
             />
           ))}
           
