@@ -6,9 +6,12 @@ import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useState, useRef, useMemo, useEffect } from "react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useState, useRef, useMemo, useEffect, useCallback } from "react";
 import * as THREE from "three";
-import { CloudRain, AlertTriangle, Play, Pause, RotateCcw } from "lucide-react";
+import { CloudRain, AlertTriangle, Play, Pause, RotateCcw, History, Trash2, Eye, Clock, Droplets } from "lucide-react";
 import CrossSectionView from "./CrossSectionView";
 
 interface ManholeData {
@@ -53,6 +56,20 @@ interface StormPattern {
   timeToPeak: number; // fraction of duration (0-1)
   recessionFactor: number; // controls falling limb steepness
   color: string;
+}
+
+// Storm History Record
+interface StormHistoryRecord {
+  id: string;
+  timestamp: Date;
+  patternId: string;
+  patternName: string;
+  duration: number;
+  peakIntensity: number;
+  peakFlow: number;
+  totalVolume: number;
+  capacityWarnings: string[];
+  maxCapacityExceeded: boolean;
 }
 
 const stormPatterns: StormPattern[] = [
@@ -417,6 +434,13 @@ const Network3D = () => {
   const [peakRainfall, setPeakRainfall] = useState<number>(8); // mm/hr -> flow units
   const [stormTimeElapsed, setStormTimeElapsed] = useState<number>(0);
   const [peakFlowReached, setPeakFlowReached] = useState<number>(0);
+  const [totalVolumeAccumulated, setTotalVolumeAccumulated] = useState<number>(0);
+  
+  // Storm history state
+  const [stormHistory, setStormHistory] = useState<StormHistoryRecord[]>([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
+  const [isReplaying, setIsReplaying] = useState<boolean>(false);
+  const [selectedHistoryRecord, setSelectedHistoryRecord] = useState<StormHistoryRecord | null>(null);
   
   const currentStormPattern = useMemo(() => {
     return stormPatterns.find(p => p.id === selectedStormPattern) || stormPatterns[2];
@@ -464,6 +488,24 @@ const Network3D = () => {
     });
   }, [totalFlow]);
   
+  // Record storm to history when completed
+  const recordStormToHistory = useCallback(() => {
+    const record: StormHistoryRecord = {
+      id: `storm-${Date.now()}`,
+      timestamp: new Date(),
+      patternId: selectedStormPattern,
+      patternName: currentStormPattern.name,
+      duration: selectedStormPattern === "custom" ? stormDuration : currentStormPattern.duration,
+      peakIntensity: selectedStormPattern === "custom" ? peakRainfall : currentStormPattern.peakIntensity,
+      peakFlow: peakFlowReached,
+      totalVolume: totalVolumeAccumulated,
+      capacityWarnings: capacityWarnings.map(p => p.id),
+      maxCapacityExceeded: capacityWarnings.length > 0
+    };
+    
+    setStormHistory(prev => [record, ...prev].slice(0, 20)); // Keep last 20 records
+  }, [selectedStormPattern, currentStormPattern, stormDuration, peakRainfall, peakFlowReached, totalVolumeAccumulated, capacityWarnings]);
+  
   // Update storm time
   useEffect(() => {
     if (!isStormActive || !isAnimating) return;
@@ -477,17 +519,17 @@ const Network3D = () => {
           ? stormDuration
           : currentStormPattern.duration;
         
-        // Track peak flow
+        // Track peak flow and accumulate volume
         const intensity = selectedStormPattern === "custom"
           ? getStormIntensity(next, stormDuration, peakRainfall, currentStormPattern.timeToPeak, currentStormPattern.recessionFactor)
           : getStormIntensity(next, currentStormPattern.duration, currentStormPattern.peakIntensity, currentStormPattern.timeToPeak, currentStormPattern.recessionFactor);
         const flow = rainfallToFlowRate(intensity);
         setPeakFlowReached(prevPeak => Math.max(prevPeak, flow));
+        setTotalVolumeAccumulated(prevVol => prevVol + flow * 0.1); // Integrate flow over time
         
         // Stop storm when duration reached
         if (next >= duration) {
-          setIsStormActive(false);
-          return 0;
+          return prev; // Don't reset here, let the effect below handle it
         }
         return next;
       });
@@ -496,11 +538,27 @@ const Network3D = () => {
     return () => clearInterval(interval);
   }, [isStormActive, isAnimating, stormDuration, peakRainfall, selectedStormPattern, currentStormPattern]);
   
+  // Handle storm completion
+  useEffect(() => {
+    if (!isStormActive) return;
+    
+    const duration = selectedStormPattern === "custom" ? stormDuration : currentStormPattern.duration;
+    
+    if (stormTimeElapsed >= duration) {
+      recordStormToHistory();
+      setIsStormActive(false);
+      setStormTimeElapsed(0);
+      setIsReplaying(false);
+    }
+  }, [stormTimeElapsed, isStormActive, stormDuration, currentStormPattern.duration, selectedStormPattern, recordStormToHistory]);
+  
   const startStorm = () => {
     setStormTimeElapsed(0);
     setPeakFlowReached(0);
+    setTotalVolumeAccumulated(0);
     setIsStormActive(true);
     setIsAnimating(true);
+    setIsReplaying(false);
     
     // If not custom, update display values to match pattern
     if (selectedStormPattern !== "custom") {
@@ -510,14 +568,59 @@ const Network3D = () => {
   };
   
   const stopStorm = () => {
+    // Record partial storm if it ran for more than 10%
+    const duration = selectedStormPattern === "custom" ? stormDuration : currentStormPattern.duration;
+    if (stormTimeElapsed > duration * 0.1) {
+      recordStormToHistory();
+    }
     setIsStormActive(false);
     setStormTimeElapsed(0);
+    setIsReplaying(false);
   };
   
   const resetStorm = () => {
     setIsStormActive(false);
     setStormTimeElapsed(0);
     setPeakFlowReached(0);
+    setTotalVolumeAccumulated(0);
+    setIsReplaying(false);
+  };
+  
+  const replayStorm = (record: StormHistoryRecord) => {
+    // Set up parameters from history record
+    if (record.patternId === "custom") {
+      setSelectedStormPattern("custom");
+      setStormDuration(record.duration);
+      setPeakRainfall(record.peakIntensity);
+    } else {
+      setSelectedStormPattern(record.patternId);
+    }
+    
+    // Start the storm
+    setStormTimeElapsed(0);
+    setPeakFlowReached(0);
+    setTotalVolumeAccumulated(0);
+    setIsStormActive(true);
+    setIsAnimating(true);
+    setIsReplaying(true);
+    setIsHistoryOpen(false);
+  };
+  
+  const deleteHistoryRecord = (id: string) => {
+    setStormHistory(prev => prev.filter(record => record.id !== id));
+  };
+  
+  const clearAllHistory = () => {
+    setStormHistory([]);
+  };
+  
+  const formatTimestamp = (date: Date) => {
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
   };
 
   return (
@@ -540,6 +643,20 @@ const Network3D = () => {
               </div>
             </div>
             <div className="flex gap-2">
+              <Button 
+                size="sm" 
+                variant="outline" 
+                onClick={() => setIsHistoryOpen(true)}
+                className="gap-1"
+              >
+                <History className="w-3 h-3" />
+                <span className="hidden sm:inline">History</span>
+                {stormHistory.length > 0 && (
+                  <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-xs">
+                    {stormHistory.length}
+                  </Badge>
+                )}
+              </Button>
               {!isStormActive ? (
                 <Button size="sm" onClick={startStorm} className="gap-1">
                   <Play className="w-3 h-3" /> Start Storm
@@ -647,7 +764,15 @@ const Network3D = () => {
             
             {isStormActive && (
               <>
-                <div className="grid grid-cols-4 gap-2 text-xs">
+                {/* Replay indicator */}
+                {isReplaying && (
+                  <div className="flex items-center gap-2 mb-2 p-2 bg-accent/20 rounded border border-accent/30">
+                    <RotateCcw className="w-4 h-4 text-accent animate-spin" />
+                    <span className="text-sm text-accent font-medium">Replaying historical storm...</span>
+                  </div>
+                )}
+                
+                <div className="grid grid-cols-5 gap-2 text-xs">
                   <div className="bg-background/50 rounded p-2">
                     <span className="text-muted-foreground">Time:</span>
                     <span className="ml-1 text-foreground font-medium">{stormTimeElapsed.toFixed(1)}s</span>
@@ -661,8 +786,12 @@ const Network3D = () => {
                     <span className="ml-1 text-foreground font-medium">{currentStormFlow.toFixed(1)} m³/s</span>
                   </div>
                   <div className="bg-background/50 rounded p-2">
-                    <span className="text-muted-foreground">Peak Flow:</span>
+                    <span className="text-muted-foreground">Peak:</span>
                     <span className="ml-1 text-foreground font-medium">{peakFlowReached.toFixed(1)} m³/s</span>
+                  </div>
+                  <div className="bg-background/50 rounded p-2">
+                    <span className="text-muted-foreground">Volume:</span>
+                    <span className="ml-1 text-foreground font-medium">{totalVolumeAccumulated.toFixed(1)} m³</span>
                   </div>
                 </div>
                 
@@ -912,6 +1041,207 @@ const Network3D = () => {
           />
         </div>
       )}
+      
+      {/* Storm History Dialog */}
+      <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="w-5 h-5" />
+              Storm Simulation History
+            </DialogTitle>
+            <DialogDescription>
+              View past storm simulations, compare results, and replay scenarios
+            </DialogDescription>
+          </DialogHeader>
+          
+          {stormHistory.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <CloudRain className="w-12 h-12 text-muted-foreground/50 mb-4" />
+              <h4 className="text-lg font-medium text-foreground mb-2">No Storm History</h4>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                Run storm simulations to build a history log. Each completed storm will be recorded here for comparison and replay.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="flex justify-between items-center mb-4">
+                <Badge variant="outline" className="gap-1">
+                  <Clock className="w-3 h-3" />
+                  {stormHistory.length} simulation{stormHistory.length !== 1 ? 's' : ''} recorded
+                </Badge>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={clearAllHistory}
+                  className="gap-1 text-destructive hover:text-destructive"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Clear All
+                </Button>
+              </div>
+              
+              <ScrollArea className="h-[400px] pr-4">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Pattern</TableHead>
+                      <TableHead className="text-right">Duration</TableHead>
+                      <TableHead className="text-right">Peak Intensity</TableHead>
+                      <TableHead className="text-right">Peak Flow</TableHead>
+                      <TableHead className="text-right">Volume</TableHead>
+                      <TableHead>Warnings</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {stormHistory.map((record) => (
+                      <TableRow 
+                        key={record.id}
+                        className={record.maxCapacityExceeded ? "bg-destructive/5" : ""}
+                      >
+                        <TableCell className="font-medium">
+                          <div className="flex items-center gap-2">
+                            <Clock className="w-3 h-3 text-muted-foreground" />
+                            <span className="text-xs">{formatTimestamp(record.timestamp)}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <div 
+                              className="w-2.5 h-2.5 rounded-full" 
+                              style={{ 
+                                backgroundColor: stormPatterns.find(p => p.id === record.patternId)?.color || '#06b6d4' 
+                              }}
+                            />
+                            <span className="text-sm">{record.patternName}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right text-sm">{record.duration}s</TableCell>
+                        <TableCell className="text-right text-sm">{record.peakIntensity.toFixed(1)} mm/h</TableCell>
+                        <TableCell className="text-right">
+                          <span className={`text-sm font-medium ${record.maxCapacityExceeded ? 'text-destructive' : 'text-foreground'}`}>
+                            {record.peakFlow.toFixed(2)} m³/s
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right text-sm">{record.totalVolume.toFixed(1)} m³</TableCell>
+                        <TableCell>
+                          {record.maxCapacityExceeded ? (
+                            <div className="flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-destructive" />
+                              <span className="text-xs text-destructive">
+                                {record.capacityWarnings.length} pipe{record.capacityWarnings.length !== 1 ? 's' : ''}
+                              </span>
+                            </div>
+                          ) : (
+                            <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/20">
+                              OK
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex gap-1 justify-end">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              onClick={() => setSelectedHistoryRecord(record)}
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              onClick={() => replayStorm(record)}
+                              disabled={isStormActive}
+                            >
+                              <Play className="w-3.5 h-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                              onClick={() => deleteHistoryRecord(record.id)}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+              
+              {/* Detail View */}
+              {selectedHistoryRecord && (
+                <div className="mt-4 p-4 bg-muted/50 rounded-lg border border-border">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="font-semibold text-foreground flex items-center gap-2">
+                      <Droplets className="w-4 h-4" />
+                      Storm Details: {selectedHistoryRecord.patternName}
+                    </h4>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setSelectedHistoryRecord(null)}
+                    >
+                      Close
+                    </Button>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Recorded:</span>
+                      <p className="font-medium">{formatTimestamp(selectedHistoryRecord.timestamp)}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Duration:</span>
+                      <p className="font-medium">{selectedHistoryRecord.duration}s</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Peak Intensity:</span>
+                      <p className="font-medium">{selectedHistoryRecord.peakIntensity.toFixed(1)} mm/h</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Peak Flow:</span>
+                      <p className={`font-medium ${selectedHistoryRecord.maxCapacityExceeded ? 'text-destructive' : ''}`}>
+                        {selectedHistoryRecord.peakFlow.toFixed(2)} m³/s
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Total Volume:</span>
+                      <p className="font-medium">{selectedHistoryRecord.totalVolume.toFixed(1)} m³</p>
+                    </div>
+                    <div className="md:col-span-3">
+                      <span className="text-muted-foreground">Capacity Warnings:</span>
+                      <p className={`font-medium ${selectedHistoryRecord.maxCapacityExceeded ? 'text-destructive' : 'text-primary'}`}>
+                        {selectedHistoryRecord.maxCapacityExceeded 
+                          ? `Exceeded in: ${selectedHistoryRecord.capacityWarnings.join(', ')}`
+                          : 'No capacity issues detected'}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-4 flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => replayStorm(selectedHistoryRecord)}
+                      disabled={isStormActive}
+                      className="gap-1"
+                    >
+                      <Play className="w-3 h-3" />
+                      Replay This Storm
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 };
